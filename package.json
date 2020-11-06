@@ -12,7 +12,7 @@
   "typings": "lib/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "prepare": "npm run build",
+    "prepublish": "npm run build",
     "pretest": "cd test/fixtures/xml2js && yarn --frozen-lockfile",
     "test": "mocha --require ts-node/register test/*_spec.ts"
   },
