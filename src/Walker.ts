@@ -12,6 +12,12 @@ export interface PackageJSON {
   devDependencies: { [name: string]: VersionRange }
   optionalDependencies: { [name: string]: VersionRange }
 }
+interface ResolvingModule {
+  path: string;
+  depType: DepType;
+  nativeModuleType: Promise<NativeModuleType>;
+  name: Promise<string>;
+}
 export interface Module {
   path: string;
   depType: DepType;
@@ -23,7 +29,7 @@ const d = debug('flora-colossus');
 
 export class Walker {
   private rootModule: string;
-  private modules: Module[];
+  private modules: ResolvingModule[];
   private walkHistory: Set<string> = new Set();
 
   constructor(modulePath: string) {
@@ -95,9 +101,15 @@ export class Walker {
     if (this.walkHistory.has(modulePath)) {
       d('already walked this route');
       // Find the existing module reference
-      const existingModule = this.modules.find(module =>  module.path === modulePath) as Module;
+      const existingModule = this.modules.find(module =>  module.path === modulePath);
+      // Modules are deleted if they are invalid, 
+      // but remain in walkHistory so they aren't pointlessly checked again.
+      if (!existingModule) {
+        return;
+      }
+
       // If the depType we are traversing with now is higher than the
-      // last traversal then update it (prod superseeds dev for instance)
+      // last traversal then update it (prod supersedes dev for instance)
       if (depTypeGreater(depType, existingModule.depType)) {
         d(`existing module has a type of "${existingModule.depType}", new module type would be "${depType}" therefore updating`);
         existingModule.depType = depType;
@@ -105,22 +117,36 @@ export class Walker {
       return;
     }
 
-    const pJ = await this.loadPackageJSON(modulePath);
-    // If the module doesn't have a package.json file it is probably a
-    // dead install from yarn (they dont clean up for some reason)
-    if (!pJ) {
-      d('walk hit a dead end, this module is incomplete');
-      return;
-    }
-
+    // Index at which module will be inserted.
+    const index = this.modules.length;
+    const pJPromise = this.loadPackageJSON(modulePath);
+    
     // Record this module as being traversed
     this.walkHistory.add(modulePath);
+    
+    // If the module is invalid, its promises should never resolve, so base them off this.
+    const resolveIfPJ = pJPromise.then(pJ => pJ ? pJ : new Promise<PackageJSON>(() => {}));
+    // The module needs to be added to the list immediately after recording it as walked, 
+    // otherwise walking the same path while awaiting promises errors because the module's not there.
+    // It also needs to be recorded as walked immediately, otherwise it will be recorded in `this.modules` twice.
+    // But since the only property future walks need to look at is `depType`, which is synchronous, the rest can be promises.
     this.modules.push({
-      depType,
-      nativeModuleType: await this.detectNativeModuleType(modulePath, pJ),
       path: modulePath,
-      name: pJ.name,
+      depType,
+      nativeModuleType: resolveIfPJ.then(pJ => this.detectNativeModuleType(modulePath, pJ)),
+      name: resolveIfPJ.then(pJ => pJ.name),
     });
+
+    const pJ = await pJPromise;
+
+    // If the module doesn't have a package.json file it is probably a
+    // dead install from yarn (they dont clean up for some reason),
+    // so delete the module from the list.
+    if (!pJ) {
+      d('walk hit a dead end, this module is incomplete');
+      this.modules.splice(index, 1);
+      return;
+    }
 
     const resolvingDeps = [];
 
@@ -175,7 +201,11 @@ export class Walker {
           reject(err);
           return;
         }
-        resolve(this.modules);
+        resolve(await Promise.all(this.modules.map(async module => ({
+          ...module, 
+          name: await module.name, 
+          nativeModuleType: await module.nativeModuleType
+        }))));
       });
     } else {
       d('tree walk in progress / completed already, waiting for existing walk to complete');
