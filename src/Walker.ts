@@ -122,6 +122,8 @@ export class Walker {
       name: pJ.name,
     });
 
+    const resolvingDeps = [];
+
     // For every prod dep
     for (const moduleName in pJ.dependencies) {
       // npm decides it's a funny thing to put optional dependencies in the "dependencies" section
@@ -130,33 +132,35 @@ export class Walker {
         d(`found ${moduleName} in prod deps of ${modulePath} but it is also marked optional`);
         continue;
       }
-      await this.walkDependenciesForModuleInModule(
+      resolvingDeps.push(this.walkDependenciesForModuleInModule(
         moduleName,
         modulePath,
         childDepType(depType, DepType.PROD),
-      );
+      ));
     }
 
     // For every optional dep
     for (const moduleName in pJ.optionalDependencies) {
-      await this.walkDependenciesForModuleInModule(
+      resolvingDeps.push(this.walkDependenciesForModuleInModule(
         moduleName,
         modulePath,
         childDepType(depType, DepType.OPTIONAL),
-      );
+      ));
     }
 
     // For every dev dep, but only if we are in the root module
     if (depType === DepType.ROOT) {
       d('we\'re still at the beginning, walking down the dev route');
       for (const moduleName in pJ.devDependencies) {
-        await this.walkDependenciesForModuleInModule(
+        resolvingDeps.push(this.walkDependenciesForModuleInModule(
           moduleName,
           modulePath,
           childDepType(depType, DepType.DEV),
-        );
+        ));
       }
     }
+
+    await Promise.all(resolvingDeps);
   }
 
   private cache: Promise<Module[]> | null = null;
